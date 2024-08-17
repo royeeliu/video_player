@@ -1,5 +1,5 @@
 use softbuffer::{Context, Surface};
-use std::{env, num::NonZeroU32, rc::Rc};
+use std::{env, num::NonZeroU32, rc::Rc, sync::mpsc};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -10,23 +10,19 @@ use winit::{
 extern crate ffmpeg_next as ffmpeg;
 use ffmpeg::software::scaling;
 
+type PacketReceiver = mpsc::Receiver<ffmpeg::codec::packet::Packet>;
+
 pub struct App {
-    ictx: ffmpeg::format::context::Input,
-    video_stream_index: usize,
+    packet_receiver: PacketReceiver,
     decoder: ffmpeg::decoder::Video,
     window: Option<Rc<Window>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
 }
 
 impl App {
-    pub fn new(
-        ictx: ffmpeg::format::context::Input,
-        video_stream_index: usize,
-        decoder: ffmpeg::decoder::Video,
-    ) -> Self {
+    pub fn new(packet_receiver: PacketReceiver, decoder: ffmpeg::decoder::Video) -> Self {
         App {
-            ictx,
-            video_stream_index,
+            packet_receiver,
             decoder,
             window: None,
             surface: None,
@@ -76,12 +72,9 @@ impl ApplicationHandler for App {
 
                         let mut decoded = ffmpeg::frame::Video::empty();
                         while unsafe { decoded.is_empty() } {
-                            let mut packet = ffmpeg::codec::packet::Packet::empty();
-                            packet.read(&mut self.ictx).unwrap();
-                            if packet.stream() == self.video_stream_index {
-                                self.decoder.send_packet(&packet).unwrap();
-                                self.decoder.receive_frame(&mut decoded).err();
-                            }
+                            let packet = self.packet_receiver.recv().unwrap();
+                            self.decoder.send_packet(&packet).unwrap();
+                            self.decoder.receive_frame(&mut decoded).err();
                         }
 
                         if unsafe { decoded.is_empty() } {
@@ -142,9 +135,10 @@ fn main() {
         .unwrap();
 
     let video_stream_index = input.index();
-    let context_decoder =
+
+    let context_decoder: ffmpeg::codec::Context =
         ffmpeg::codec::context::Context::from_parameters(input.parameters()).unwrap();
-    let mut decoder = context_decoder.decoder().video().unwrap();
+    let decoder = context_decoder.decoder().video().unwrap();
     println!(
         "\nVideo: {:?}, {}x{}",
         decoder.id(),
@@ -152,7 +146,16 @@ fn main() {
         decoder.height()
     );
 
-    let mut app = App::new(ictx, video_stream_index, decoder);
+    let (packet_sender, packet_receiver) = mpsc::sync_channel(10);
+    std::thread::spawn(move || loop {
+        let mut packet = ffmpeg::codec::packet::Packet::empty();
+        packet.read(&mut ictx).unwrap();
+        if packet.stream() == video_stream_index {
+            packet_sender.send(packet).unwrap();
+        }
+    });
+
+    let mut app = App::new(packet_receiver, decoder);
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.run_app(&mut app).expect("Run app failed");
