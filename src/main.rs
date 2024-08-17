@@ -10,20 +10,18 @@ use winit::{
 extern crate ffmpeg_next as ffmpeg;
 use ffmpeg::software::scaling;
 
-type PacketReceiver = mpsc::Receiver<ffmpeg::codec::packet::Packet>;
+type VideoReceiver = mpsc::Receiver<ffmpeg::frame::Video>;
 
 pub struct App {
-    packet_receiver: PacketReceiver,
-    decoder: ffmpeg::decoder::Video,
+    video_receiver: VideoReceiver,
     window: Option<Rc<Window>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
 }
 
 impl App {
-    pub fn new(packet_receiver: PacketReceiver, decoder: ffmpeg::decoder::Video) -> Self {
+    pub fn new(video_receiver: VideoReceiver) -> Self {
         App {
-            packet_receiver,
-            decoder,
+            video_receiver,
             window: None,
             surface: None,
         }
@@ -59,10 +57,12 @@ impl ApplicationHandler for App {
                     if let Some(surface) = self.surface.as_mut() {
                         surface.resize(width, height).unwrap();
 
+                        let yuv_frame = self.video_receiver.recv().unwrap();
+
                         let mut scaler = scaling::Context::get(
-                            self.decoder.format(),
-                            self.decoder.width(),
-                            self.decoder.height(),
+                            yuv_frame.format(),
+                            yuv_frame.width(),
+                            yuv_frame.height(),
                             ffmpeg::util::format::Pixel::RGBA,
                             width.get(),
                             height.get(),
@@ -70,18 +70,8 @@ impl ApplicationHandler for App {
                         )
                         .unwrap();
 
-                        let mut decoded = ffmpeg::frame::Video::empty();
-                        while unsafe { decoded.is_empty() } {
-                            let packet = self.packet_receiver.recv().unwrap();
-                            self.decoder.send_packet(&packet).unwrap();
-                            self.decoder.receive_frame(&mut decoded).err();
-                        }
-
-                        if unsafe { decoded.is_empty() } {
-                            return;
-                        }
                         let mut rgb_frame = ffmpeg::frame::Video::empty();
-                        scaler.run(&decoded, &mut rgb_frame).unwrap();
+                        scaler.run(&yuv_frame, &mut rgb_frame).unwrap();
 
                         let mut buffer = surface.buffer_mut().unwrap();
                         let data = rgb_frame.data(0);
@@ -138,7 +128,7 @@ fn main() {
 
     let context_decoder: ffmpeg::codec::Context =
         ffmpeg::codec::context::Context::from_parameters(input.parameters()).unwrap();
-    let decoder = context_decoder.decoder().video().unwrap();
+    let mut decoder = context_decoder.decoder().video().unwrap();
     println!(
         "\nVideo: {:?}, {}x{}",
         decoder.id(),
@@ -147,6 +137,8 @@ fn main() {
     );
 
     let (packet_sender, packet_receiver) = mpsc::sync_channel(10);
+    let (video_sender, video_receiver) = mpsc::sync_channel(1);
+
     std::thread::spawn(move || loop {
         let mut packet = ffmpeg::codec::packet::Packet::empty();
         packet.read(&mut ictx).unwrap();
@@ -155,7 +147,17 @@ fn main() {
         }
     });
 
-    let mut app = App::new(packet_receiver, decoder);
+    std::thread::spawn(move || loop {
+        let mut frame = ffmpeg::frame::Video::empty();
+        while unsafe { frame.is_empty() } {
+            let packet = packet_receiver.recv().unwrap();
+            decoder.send_packet(&packet).unwrap();
+            decoder.receive_frame(&mut frame).err();
+        }
+        video_sender.send(frame).unwrap();
+    });
+
+    let mut app = App::new(video_receiver);
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.run_app(&mut app).expect("Run app failed");
