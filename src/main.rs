@@ -1,5 +1,6 @@
-use softbuffer::{Context, Surface};
-use std::{env, num::NonZeroU32, rc::Rc, sync::mpsc};
+use softbuffer::Context;
+use std::{env, rc::Rc, sync::mpsc};
+use video_renderer::VideoRenderer;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -8,22 +9,20 @@ use winit::{
 };
 
 extern crate ffmpeg_next as ffmpeg;
-use ffmpeg::software::scaling;
-
 type VideoReceiver = mpsc::Receiver<ffmpeg::frame::Video>;
 
+mod video_renderer;
+
 pub struct App {
-    video_receiver: VideoReceiver,
     window: Option<Rc<Window>>,
-    surface: Option<Surface<Rc<Window>, Rc<Window>>>,
+    renderer: VideoRenderer,
 }
 
 impl App {
     pub fn new(video_receiver: VideoReceiver) -> Self {
         App {
-            video_receiver,
             window: None,
-            surface: None,
+            renderer: VideoRenderer::new(video_receiver),
         }
     }
 }
@@ -36,9 +35,8 @@ impl ApplicationHandler for App {
             let window = event_loop.create_window(attr).unwrap();
             let window = Rc::new(window);
             let context = Context::new(window.clone()).unwrap();
-            let surface = Surface::new(&context, window.clone()).unwrap();
+            self.renderer.init(&context, window.clone());
             self.window = Some(window);
-            self.surface = Some(surface);
         }
     }
 
@@ -49,46 +47,14 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::RedrawRequested => {
-                if let (Some(width), Some(height)) = {
-                    let size = self.window.as_ref().unwrap().inner_size();
-                    (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-                } {
-                    if let Some(surface) = self.surface.as_mut() {
-                        surface.resize(width, height).unwrap();
-
-                        let yuv_frame = self.video_receiver.recv().unwrap();
-
-                        let mut scaler = scaling::Context::get(
-                            yuv_frame.format(),
-                            yuv_frame.width(),
-                            yuv_frame.height(),
-                            ffmpeg::util::format::Pixel::RGBA,
-                            width.get(),
-                            height.get(),
-                            scaling::Flags::BILINEAR,
-                        )
-                        .unwrap();
-
-                        let mut rgb_frame = ffmpeg::frame::Video::empty();
-                        scaler.run(&yuv_frame, &mut rgb_frame).unwrap();
-
-                        let mut buffer = surface.buffer_mut().unwrap();
-                        let data = rgb_frame.data(0);
-                        for y in 0..height.get() {
-                            for x in 0..width.get() {
-                                let index = (y * rgb_frame.stride(0) as u32 + x * 4) as usize;
-                                let pixel = &data[index..index + 3];
-                                let red = pixel[0] as u32;
-                                let green = pixel[1] as u32;
-                                let blue = pixel[2] as u32;
-                                let index = y as usize * width.get() as usize + x as usize;
-                                buffer[index] = blue | (green << 8) | (red << 16);
-                            }
-                        }
-                        buffer.present().unwrap();
-                    }
+            WindowEvent::Resized(size) => {
+                if let Some(window) = self.window.as_ref() {
+                    self.renderer.resize(size);
+                    window.request_redraw();
                 }
+            }
+            WindowEvent::RedrawRequested => {
+                self.renderer.render();
                 self.window.as_ref().unwrap().request_redraw();
             }
             WindowEvent::CloseRequested => {
