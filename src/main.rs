@@ -1,5 +1,7 @@
-use softbuffer::Context;
-use std::{env, rc::Rc, sync::mpsc};
+use std::{
+    env,
+    sync::{mpsc, Arc},
+};
 use video_renderer::VideoRenderer;
 use winit::{
     application::ApplicationHandler,
@@ -11,10 +13,11 @@ use winit::{
 extern crate ffmpeg_next as ffmpeg;
 type VideoReceiver = mpsc::Receiver<ffmpeg::frame::Video>;
 
+mod texture;
 mod video_renderer;
 
 pub struct App {
-    window: Option<Rc<Window>>,
+    window: Option<Arc<Window>>,
     renderer: VideoRenderer,
 }
 
@@ -33,9 +36,8 @@ impl ApplicationHandler for App {
         if self.window.is_none() {
             let attr = Window::default_attributes().with_title("Soft Render Example");
             let window = event_loop.create_window(attr).unwrap();
-            let window = Rc::new(window);
-            let context = Context::new(window.clone()).unwrap();
-            self.renderer.init(&context, window.clone());
+            let window = Arc::new(window);
+            self.renderer.init(window.clone());
             self.window = Some(window);
         }
     }
@@ -67,6 +69,7 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    env_logger::init();
     if env::args().len() < 2 {
         println!("ERROR: No input file.");
         return;
@@ -107,7 +110,9 @@ fn main() {
 
     std::thread::spawn(move || loop {
         let mut packet = ffmpeg::codec::packet::Packet::empty();
-        packet.read(&mut ictx).unwrap();
+        if packet.read(&mut ictx).is_err() {
+            break;
+        }
         if packet.stream() == video_stream_index {
             packet_sender.send(packet).unwrap();
         }
@@ -116,9 +121,15 @@ fn main() {
     std::thread::spawn(move || loop {
         let mut frame = ffmpeg::frame::Video::empty();
         while unsafe { frame.is_empty() } {
-            let packet = packet_receiver.recv().unwrap();
-            decoder.send_packet(&packet).unwrap();
-            decoder.receive_frame(&mut frame).err();
+            if let Some(packet) = packet_receiver.recv().ok() {
+                decoder.send_packet(&packet).unwrap();
+                decoder.receive_frame(&mut frame).err();
+            } else {
+                break;
+            }
+        }
+        if unsafe { frame.is_empty() } {
+            break;
         }
         video_sender.send(frame).unwrap();
     });

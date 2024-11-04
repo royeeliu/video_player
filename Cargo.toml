@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+log = "0.4"
+env_logger = "0.11"
 winit = "0.30"
 softbuffer = "0.4"
 ffmpeg-next = "7.0.4"
+wgpu = "22.1"
+pollster = "0.3"
+bytemuck = { version = "1.19", features = ["derive"] }
+anyhow = "1.0"
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["jpeg", "png"]
