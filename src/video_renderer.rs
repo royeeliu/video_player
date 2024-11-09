@@ -71,6 +71,7 @@ struct WgpuContext {
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     texture_bind_group_layout: wgpu::BindGroupLayout,
+    // sampler: wgpu::Sampler,
 }
 
 impl WgpuContext {
@@ -310,13 +311,39 @@ impl VideoRenderer {
 
                 let device = context.device();
                 let queue = context.queue();
-                let texture = texture::Texture::from_bytes(
+                let texture = texture::Texture::new(
                     device,
-                    queue,
-                    data,
                     (yuv_frame.width(), yuv_frame.height()),
                 )
                 .unwrap();
+
+                queue.write_texture(
+                    wgpu::ImageCopyTexture {
+                        aspect: wgpu::TextureAspect::All,
+                        texture: &texture.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                    },
+                    &data,
+                    wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(rgb_frame.stride(0) as u32),
+                        rows_per_image: Some(rgb_frame.height()),
+                    },
+                    texture.texture.size(),
+                );
+
+                let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                    address_mode_u: wgpu::AddressMode::ClampToEdge,
+                    address_mode_v: wgpu::AddressMode::ClampToEdge,
+                    address_mode_w: wgpu::AddressMode::ClampToEdge,
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Nearest,
+                    mipmap_filter: wgpu::FilterMode::Nearest,
+                    ..Default::default()
+                });
+
+                
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     layout: &context.texture_bind_group_layout(),
                     entries: &[
@@ -326,7 +353,7 @@ impl VideoRenderer {
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&texture.sampler),
+                            resource: wgpu::BindingResource::Sampler(&sampler),
                         },
                     ],
                     label: Some("video_frame_bind_group"),
