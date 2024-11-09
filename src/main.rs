@@ -13,8 +13,10 @@ use winit::{
 extern crate ffmpeg_next as ffmpeg;
 type VideoReceiver = mpsc::Receiver<ffmpeg::frame::Video>;
 
+mod presenter;
 mod texture;
 mod video_renderer;
+mod wgpu_context;
 
 pub struct App {
     window: Option<Arc<Window>>,
@@ -34,7 +36,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         println!("Resumed");
         if self.window.is_none() {
-            let attr = Window::default_attributes().with_title("Soft Render Example");
+            let attr = Window::default_attributes().with_title("VideoPlayer");
             let window = event_loop.create_window(attr).unwrap();
             let window = Arc::new(window);
             self.renderer.init(window.clone());

@@ -1,7 +1,7 @@
 use anyhow::*;
 
 #[allow(dead_code)]
-pub struct Texture {
+pub(crate) struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 }
@@ -24,10 +24,7 @@ impl Texture {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        
-        Ok(Self {
-            texture,
-            view,
-        })
+
+        Ok(Self { texture, view })
     }
 }
