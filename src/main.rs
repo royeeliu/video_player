@@ -6,7 +6,7 @@ use video_renderer::VideoRenderer;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
 
@@ -18,28 +18,52 @@ mod texture;
 mod video_renderer;
 mod wgpu_context;
 
+#[derive(Debug, Clone, Copy)]
+enum UserEvent {
+    RequestRedraw,
+}
+
 pub struct App {
     window: Option<Arc<Window>>,
     renderer: VideoRenderer,
+    event_loop_proxy: EventLoopProxy<UserEvent>,
 }
 
 impl App {
-    pub fn new(video_receiver: VideoReceiver) -> Self {
+    fn new(video_receiver: VideoReceiver, event_loop: &EventLoop<UserEvent>) -> Self {
+        let event_loop_proxy = event_loop.create_proxy();
         App {
             window: None,
             renderer: VideoRenderer::new(video_receiver),
+            event_loop_proxy,
         }
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<UserEvent> for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::RequestRedraw => {
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         println!("Resumed");
         if self.window.is_none() {
             let attr = Window::default_attributes().with_title("VideoPlayer");
             let window = event_loop.create_window(attr).unwrap();
             let window = Arc::new(window);
-            self.renderer.init(window.clone());
+            let proxy = self.event_loop_proxy.clone();
+            self.renderer.init(
+                window.clone(),
+                Box::new(move || {
+                    let _ = proxy.send_event(UserEvent::RequestRedraw);
+                }),
+            );
             self.window = Some(window);
         }
     }
@@ -59,7 +83,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.renderer.render();
-                self.window.as_ref().unwrap().request_redraw();
+                // self.window.as_ref().unwrap().request_redraw();
             }
             WindowEvent::CloseRequested => {
                 println!("Close requested");
@@ -136,8 +160,8 @@ fn main() {
         video_sender.send(frame).unwrap();
     });
 
-    let mut app = App::new(video_receiver);
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+    let mut app = App::new(video_receiver, &event_loop);
 
-    let event_loop = EventLoop::new().unwrap();
     event_loop.run_app(&mut app).expect("Run app failed");
 }

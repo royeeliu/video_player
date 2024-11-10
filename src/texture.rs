@@ -7,10 +7,10 @@ pub(crate) struct Texture {
 }
 
 impl Texture {
-    pub fn new(device: &wgpu::Device, dimensions: (u32, u32)) -> Result<Self> {
+    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self> {
         let size = wgpu::Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
+            width,
+            height,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
