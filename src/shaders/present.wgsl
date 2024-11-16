@@ -12,11 +12,11 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(
-    model: VertexInput,
+    in: VertexInput,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.tex_coords = model.tex_coords;
-    out.clip_position = vec4f(model.position, 1.0);
+    out.tex_coords = in.tex_coords;
+    out.clip_position = vec4f(in.position, 1.0);
     return out;
 }
 

@@ -13,6 +13,7 @@ use winit::{
 extern crate ffmpeg_next as ffmpeg;
 type VideoReceiver = mpsc::Receiver<ffmpeg::frame::Video>;
 
+mod convert_from_yuv;
 mod presenter;
 mod texture;
 mod video_renderer;

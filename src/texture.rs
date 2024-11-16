@@ -7,7 +7,13 @@ pub(crate) struct Texture {
 }
 
 impl Texture {
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self> {
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
         let size = wgpu::Extent3d {
             width,
             height,
@@ -19,12 +25,35 @@ impl Texture {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            format,
+            usage,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         Ok(Self { texture, view })
+    }
+
+    pub fn new_rgba(device: &wgpu::Device, width: u32, height: u32) -> Result<Self> {
+        let usage = wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT;
+        Self::new(
+            device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            usage,
+            width,
+            height,
+        )
+    }
+
+    pub fn new_src(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+        Self::new(device, format, usage, width, height)
     }
 }

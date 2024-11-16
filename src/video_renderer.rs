@@ -8,7 +8,7 @@ use winit::{dpi::PhysicalSize, window::Window};
 extern crate ffmpeg_next as ffmpeg;
 use ffmpeg::software::scaling;
 
-use crate::wgpu_context::WgpuContext;
+use crate::{convert_from_yuv::YuvToRgbaConverter, wgpu_context::WgpuContext};
 use crate::{presenter::Presenter, texture::Texture};
 type VideoReceiver = mpsc::Receiver<ffmpeg::frame::Video>;
 type VideoSender = mpsc::SyncSender<ffmpeg::frame::Video>;
@@ -56,6 +56,10 @@ impl VideoRenderer {
     pub fn render(&mut self) {
         if let (Some(context), Some(presenter)) = (self.context.as_ref(), self.presenter.as_mut()) {
             if let Some(frame) = self.video_receiver.try_recv().ok() {
+                if !Self::is_supported_format(frame.format()) {
+                    panic!("Unsupported format: {:?}", frame.format());
+                }
+
                 self.texture = Self::update_texture(
                     context,
                     self.texture.take(),
@@ -64,22 +68,21 @@ impl VideoRenderer {
                 );
 
                 if let Some(texture) = self.texture.as_ref() {
-                    let data = frame.data(0);
-                    context.queue.write_texture(
-                        wgpu::ImageCopyTexture {
-                            aspect: wgpu::TextureAspect::All,
-                            texture: &texture.texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                        },
-                        &data,
-                        wgpu::ImageDataLayout {
-                            offset: 0,
-                            bytes_per_row: Some(frame.stride(0) as u32),
-                            rows_per_image: Some(frame.height()),
-                        },
-                        texture.texture.size(),
-                    );
+                    match frame.format() {
+                        ffmpeg::format::Pixel::RGBA => {
+                            context.write_texture(
+                                &texture.texture,
+                                frame.data(0),
+                                frame.stride(0) as u32,
+                                frame.width(),
+                                frame.height(),
+                            );
+                        }
+                        _ => {
+                            let converter = YuvToRgbaConverter::new(context.clone());
+                            converter.convert(&frame, texture);
+                        }
+                    }
                 }
             }
 
@@ -92,6 +95,24 @@ impl VideoRenderer {
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
         if let Some(context) = self.presenter.as_mut() {
             context.resize(size.width, size.height);
+        }
+    }
+
+    fn is_supported_format(format: ffmpeg::format::Pixel) -> bool {
+        match format {
+            ffmpeg::format::Pixel::RGBA
+            | ffmpeg::format::Pixel::YUV410P
+            | ffmpeg::format::Pixel::YUV411P
+            | ffmpeg::format::Pixel::YUVJ411P
+            | ffmpeg::format::Pixel::YUV420P
+            | ffmpeg::format::Pixel::YUVJ420P
+            | ffmpeg::format::Pixel::YUV422P
+            | ffmpeg::format::Pixel::YUVJ422P
+            | ffmpeg::format::Pixel::YUV440P
+            | ffmpeg::format::Pixel::YUVJ440P
+            | ffmpeg::format::Pixel::YUV444P
+            | ffmpeg::format::Pixel::YUVJ444P => true,
+            _ => false,
         }
     }
 
@@ -116,7 +137,7 @@ impl VideoRenderer {
         if texture.is_some() {
             texture
         } else {
-            Some(Texture::new(&context.device, width, height).unwrap())
+            Some(Texture::new_rgba(&context.device, width, height).unwrap())
         }
     }
 
@@ -126,22 +147,24 @@ impl VideoRenderer {
         request_redraw: Box<dyn Fn() + Send>,
     ) {
         loop {
-            if let Ok(frame) = receiver.recv() {
-                let mut scaler = scaling::Context::get(
-                    frame.format(),
-                    frame.width(),
-                    frame.height(),
-                    ffmpeg::util::format::Pixel::RGBA,
-                    frame.width(),
-                    frame.height(),
-                    scaling::Flags::BILINEAR,
-                )
-                .unwrap();
+            if let Ok(mut frame) = receiver.recv() {
+                if !Self::is_supported_format(frame.format()) {
+                    let mut scaler = scaling::Context::get(
+                        frame.format(),
+                        frame.width(),
+                        frame.height(),
+                        ffmpeg::util::format::Pixel::RGBA,
+                        frame.width(),
+                        frame.height(),
+                        scaling::Flags::BILINEAR,
+                    )
+                    .unwrap();
 
-                let mut rgb_frame = ffmpeg::frame::Video::empty();
-                scaler.run(&frame, &mut rgb_frame).unwrap();
-
-                sender.send(rgb_frame).unwrap();
+                    let mut rgb_frame = ffmpeg::frame::Video::empty();
+                    scaler.run(&frame, &mut rgb_frame).unwrap();
+                    frame = rgb_frame;
+                }
+                sender.send(frame).unwrap();
                 request_redraw();
             }
         }

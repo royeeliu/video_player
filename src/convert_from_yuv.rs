@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use wgpu::util::DeviceExt;
+extern crate ffmpeg_next as ffmpeg;
 
 use crate::{texture::Texture, wgpu_context::WgpuContext};
 
@@ -55,10 +56,8 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
-pub(crate) struct Presenter {
+pub(crate) struct YuvToRgbaConverter {
     context: Rc<WgpuContext>,
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -67,27 +66,15 @@ pub(crate) struct Presenter {
     sampler: wgpu::Sampler,
 }
 
-impl Presenter {
-    pub fn new(
-        context: Rc<WgpuContext>,
-        surface: wgpu::Surface<'static>,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let width = width.max(1);
-        let height = height.max(1);
-        let mut surface_config = surface
-            .get_default_config(&context.adapter, width, height)
-            .unwrap();
-        surface_config.format = wgpu::TextureFormat::Rgba8Unorm;
-        println!("Surface config: {:?}", surface_config);
-        surface.configure(&context.device, &surface_config);
-
+impl YuvToRgbaConverter {
+    pub fn new(context: Rc<WgpuContext>) -> Self {
         let shader = context
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/present.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("shaders/convert_yuv_to_rgba.wgsl").into(),
+                ),
             });
 
         let vertex_buffer = context
@@ -107,31 +94,37 @@ impl Presenter {
             });
         let num_indices = INDICES.len() as u32;
 
+        let y_planner = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
+        };
+        let u_planner = wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            ..y_planner
+        };
+        let v_planner = wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            ..y_planner
+        };
+        let sampler = wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
+
         let bind_group_layout =
             context
                 .device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            // This should match the filterable field of the
-                            // corresponding Texture entry above.
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                    ],
-                    label: Some("source_texture_bind_group_layout"),
+                    entries: &[y_planner, u_planner, v_planner, sampler],
+                    label: Some("yuv_textures_bind_group_layout"),
                 });
 
         let render_pipeline_layout =
@@ -159,7 +152,7 @@ impl Presenter {
                     compilation_options: Default::default(),
                     entry_point: "fs_main",
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: surface_config.format,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
                         blend: Some(wgpu::BlendState::REPLACE),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -188,15 +181,13 @@ impl Presenter {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
-        Presenter {
+        Self {
             context,
-            surface,
-            surface_config,
             pipeline,
             vertex_buffer,
             index_buffer,
@@ -206,32 +197,48 @@ impl Presenter {
         }
     }
 
-    pub fn draw(&mut self, texture: &Texture) {
+    pub fn convert(&self, src: &ffmpeg::frame::Video, dst: &Texture) {
+        assert!(Self::is_supported_format(src.format()));
+        let mut textures = Vec::new();
+        for i in 0..3 {
+            let texture = Texture::new_src(
+                &self.context.device,
+                wgpu::TextureFormat::R8Unorm,
+                src.plane_width(i),
+                src.plane_height(i),
+            )
+            .unwrap();
+            self.context.write_texture(
+                &texture.texture,
+                src.data(i),
+                src.stride(i) as u32,
+                src.plane_width(i),
+                src.plane_height(i),
+            );
+            textures.push(texture);
+        }
+
+        let mut entries = Vec::new();
+        for i in 0..3 {
+            entries.push(wgpu::BindGroupEntry {
+                binding: i as u32,
+                resource: wgpu::BindingResource::TextureView(&textures[i].view),
+            });
+        }
+        entries.push(wgpu::BindGroupEntry {
+            binding: 3,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+        });
+
         let bind_group = self
             .context
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
                 layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
+                entries: &entries,
                 label: Some("source_texture_bind_group"),
             });
 
-        let target_texture = self
-            .surface
-            .get_current_texture()
-            .expect("Get current texture failed");
-        let target_texture_view = target_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .context
             .device
@@ -241,7 +248,7 @@ impl Presenter {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_texture_view,
+                    view: &dst.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -265,13 +272,22 @@ impl Presenter {
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
         self.context.queue.submit(Some(encoder.finish()));
-        target_texture.present();
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.surface_config.width = width.max(1);
-        self.surface_config.height = height.max(1);
-        self.surface
-            .configure(&self.context.device, &self.surface_config);
+    fn is_supported_format(format: ffmpeg::format::Pixel) -> bool {
+        match format {
+            ffmpeg::format::Pixel::YUV410P
+            | ffmpeg::format::Pixel::YUV411P
+            | ffmpeg::format::Pixel::YUVJ411P
+            | ffmpeg::format::Pixel::YUV420P
+            | ffmpeg::format::Pixel::YUVJ420P
+            | ffmpeg::format::Pixel::YUV422P
+            | ffmpeg::format::Pixel::YUVJ422P
+            | ffmpeg::format::Pixel::YUV440P
+            | ffmpeg::format::Pixel::YUVJ440P
+            | ffmpeg::format::Pixel::YUV444P
+            | ffmpeg::format::Pixel::YUVJ444P => true,
+            _ => false,
+        }
     }
 }
