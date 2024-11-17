@@ -55,6 +55,24 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
+fn calc_view_port(src_size: (u32, u32), dst_size: (u32, u32)) -> (f32, f32, f32, f32) {
+    let (src_width, src_height) = src_size;
+    let (dst_width, dst_height) = dst_size;
+    let src_aspect = src_width as f32 / src_height as f32;
+    let dst_aspect = dst_width as f32 / dst_height as f32;
+    let (mut x, mut y, mut width, mut height) = (0.0, 0.0, dst_size.0 as f32, dst_size.1 as f32);
+    if src_aspect > dst_aspect {
+        height = dst_width as f32 / src_aspect;
+        y = (dst_height as f32 - height) / 2.0;
+    } else if src_aspect < dst_aspect {
+        width = dst_height as f32 * src_aspect;
+        x = (dst_width as f32 - width) / 2.0;
+    } else {
+        // Do nothing
+    }
+    (x, y, width, height)
+}
+
 pub(crate) struct Presenter {
     context: Rc<WgpuContext>,
     surface: wgpu::Surface<'static>,
@@ -65,6 +83,7 @@ pub(crate) struct Presenter {
     num_indices: u32,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    bkg_color: wgpu::Color,
 }
 
 impl Presenter {
@@ -203,6 +222,7 @@ impl Presenter {
             num_indices,
             bind_group_layout,
             sampler,
+            bkg_color: wgpu::Color::BLACK,
         }
     }
 
@@ -225,11 +245,11 @@ impl Presenter {
                 label: Some("source_texture_bind_group"),
             });
 
-        let target_texture = self
+        let dst_texture = self
             .surface
             .get_current_texture()
             .expect("Get current texture failed");
-        let target_texture_view = target_texture
+        let dst_texture_view = dst_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
@@ -241,15 +261,10 @@ impl Presenter {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_texture_view,
+                    view: &dst_texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(self.bkg_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -258,6 +273,14 @@ impl Presenter {
                 occlusion_query_set: None,
             });
 
+            let src_size = texture.texture.size();
+            let dst_size = dst_texture.texture.size();
+            let view_port = calc_view_port(
+                (src_size.width, src_size.height),
+                (dst_size.width, dst_size.height),
+            );
+
+            render_pass.set_viewport(view_port.0, view_port.1, view_port.2, view_port.3, 0.0, 1.0);
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -265,7 +288,7 @@ impl Presenter {
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
         self.context.queue.submit(Some(encoder.finish()));
-        target_texture.present();
+        dst_texture.present();
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
