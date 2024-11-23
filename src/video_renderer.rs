@@ -100,19 +100,8 @@ impl VideoRenderer {
 
     fn is_supported_format(format: ffmpeg::format::Pixel) -> bool {
         match format {
-            ffmpeg::format::Pixel::RGBA
-            | ffmpeg::format::Pixel::YUV410P
-            | ffmpeg::format::Pixel::YUV411P
-            | ffmpeg::format::Pixel::YUVJ411P
-            | ffmpeg::format::Pixel::YUV420P
-            | ffmpeg::format::Pixel::YUVJ420P
-            | ffmpeg::format::Pixel::YUV422P
-            | ffmpeg::format::Pixel::YUVJ422P
-            | ffmpeg::format::Pixel::YUV440P
-            | ffmpeg::format::Pixel::YUVJ440P
-            | ffmpeg::format::Pixel::YUV444P
-            | ffmpeg::format::Pixel::YUVJ444P => true,
-            _ => false,
+            ffmpeg::format::Pixel::RGBA => true,
+            _ => YuvToRgbaConverter::is_supported_format(format),
         }
     }
 

@@ -56,6 +56,65 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
+enum ColorMatrix {
+    BT601Limited,
+    BT601Full,
+    BT709Limited,
+    BT709Full,
+    BT2020Limited,
+    BT2020Full,
+}
+
+impl ColorMatrix {
+    fn index(&self) -> u32 {
+        match self {
+            ColorMatrix::BT601Limited => 0,
+            ColorMatrix::BT601Full => 1,
+            ColorMatrix::BT709Limited => 2,
+            ColorMatrix::BT709Full => 3,
+            ColorMatrix::BT2020Limited => 4,
+            ColorMatrix::BT2020Full => 5,
+        }
+    }
+}
+
+fn matrix_index(
+    format: ffmpeg::format::Pixel,
+    space: ffmpeg::color::Space,
+    range: ffmpeg::color::Range,
+) -> ColorMatrix {
+    let range = match range {
+        ffmpeg::color::Range::Unspecified => match format {
+            ffmpeg::format::Pixel::YUVJ411P
+            | ffmpeg::format::Pixel::YUVJ420P
+            | ffmpeg::format::Pixel::YUVJ422P
+            | ffmpeg::format::Pixel::YUVJ440P
+            | ffmpeg::format::Pixel::YUVJ444P => ffmpeg::color::Range::JPEG,
+            _ => range,
+        },
+        _ => range,
+    };
+
+    match space {
+        ffmpeg::color::Space::BT470BG | ffmpeg::color::Space::SMPTE170M => match range {
+            ffmpeg::color::Range::JPEG => ColorMatrix::BT601Full,
+            _ => ColorMatrix::BT601Limited,
+        },
+        ffmpeg::color::Space::BT709 => match range {
+            ffmpeg::color::Range::JPEG => ColorMatrix::BT709Full,
+            _ => ColorMatrix::BT709Limited,
+        },
+        ffmpeg::color::Space::BT2020CL | ffmpeg::color::Space::BT2020NCL => match range {
+            ffmpeg::color::Range::JPEG => ColorMatrix::BT2020Full,
+            _ => ColorMatrix::BT2020Limited,
+        },
+        _ => match range {
+            ffmpeg::color::Range::JPEG => ColorMatrix::BT601Full,
+            _ => ColorMatrix::BT709Limited, // default
+        },
+    }
+}
+
 pub(crate) struct YuvToRgbaConverter {
     context: Rc<WgpuContext>,
     pipeline: wgpu::RenderPipeline,
@@ -118,12 +177,22 @@ impl YuvToRgbaConverter {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         };
+        let matrix = wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
 
         let bind_group_layout =
             context
                 .device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[y_planner, u_planner, v_planner, sampler],
+                    entries: &[y_planner, u_planner, v_planner, sampler, matrix],
                     label: Some("yuv_textures_bind_group_layout"),
                 });
 
@@ -199,6 +268,7 @@ impl YuvToRgbaConverter {
 
     pub fn convert(&self, src: &ffmpeg::frame::Video, dst: &Texture) {
         assert!(Self::is_supported_format(src.format()));
+        src.color_space();
         let mut textures = Vec::new();
         for i in 0..3 {
             let texture = Texture::new_src(
@@ -217,6 +287,15 @@ impl YuvToRgbaConverter {
             );
             textures.push(texture);
         }
+        let matrix = matrix_index(src.format(), src.color_space(), src.color_range());
+        let matrix_uniform =
+            self.context
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::cast_slice(&[matrix.index()]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
 
         let mut entries = Vec::new();
         for i in 0..3 {
@@ -228,6 +307,14 @@ impl YuvToRgbaConverter {
         entries.push(wgpu::BindGroupEntry {
             binding: 3,
             resource: wgpu::BindingResource::Sampler(&self.sampler),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 4,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &matrix_uniform,
+                offset: 0,
+                size: Some(std::num::NonZeroU64::new(std::mem::size_of::<u32>() as u64).unwrap()),
+            }),
         });
 
         let bind_group = self
@@ -274,7 +361,7 @@ impl YuvToRgbaConverter {
         self.context.queue.submit(Some(encoder.finish()));
     }
 
-    fn is_supported_format(format: ffmpeg::format::Pixel) -> bool {
+    pub fn is_supported_format(format: ffmpeg::format::Pixel) -> bool {
         match format {
             ffmpeg::format::Pixel::YUV410P
             | ffmpeg::format::Pixel::YUV411P
