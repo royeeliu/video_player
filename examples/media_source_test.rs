@@ -1,6 +1,5 @@
 use std::env;
-
-use vtk::{demuxer::Demuxer, MediaType};
+use vtk::*;
 
 fn main() {
     env_logger::init();
@@ -19,10 +18,11 @@ fn main() {
     }
 
     vtk::init();
-    let demuxer = Demuxer::new(path);
-    println!("Format: {}", demuxer.format());
+    let media_source = MediaSource::open(path);
+    let format = media_source.format();
+    println!("Format: {}", format.name());
 
-    if let Some(stream) = demuxer.get_best_stream(MediaType::Video) {
-        println!("Stream index: {}", stream.index());
-    }
+    media_source.all_streams().iter().for_each(|stream| {
+        println!("Stream {}: {:?}", stream.index(), stream.media_type());
+    });
 }

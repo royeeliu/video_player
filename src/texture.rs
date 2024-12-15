@@ -1,6 +1,5 @@
 use anyhow::*;
 
-#[allow(dead_code)]
 pub(crate) struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,

@@ -1,71 +1,69 @@
-use std::{
-    path::Path,
-    sync::{mpsc, Arc},
-};
-
-use crate::MediaType;
-
-extern crate ffmpeg_next as ffmpeg;
-type PacketReceiver = mpsc::Receiver<ffmpeg::packet::Packet>;
-type PacketSender = mpsc::SyncSender<ffmpeg::packet::Packet>;
+use crate::*;
+use std::sync::{Arc, Mutex};
 
 pub struct DemuxerStream {
-    packet_receiver: PacketReceiver,
+    inner: Arc<Mutex<DemuxerStreamInner>>,
 }
 
 impl DemuxerStream {
-    pub fn new(packet_receiver: PacketReceiver) -> Self {
-        DemuxerStream { packet_receiver }
+    fn new(inner: Arc<Mutex<DemuxerStreamInner>>) -> Self {
+        DemuxerStream { inner }
     }
 
     pub fn index(&self) -> usize {
-        unimplemented!()
+        self.inner.lock().unwrap().index()
     }
 
-    fn is_enabled(&self) -> bool {
-        unimplemented!()
+    pub fn media_type(&self) -> MediaType {
+        self.inner.lock().unwrap().media_type()
     }
 
-    pub fn enable(&mut self) {
+    pub fn read(&self) -> Option<ffmpeg_next::packet::Packet> {
         unimplemented!()
-    }
-
-    pub fn disable(&mut self) {
-        unimplemented!()
-    }
-
-    pub fn read(&self) -> Option<ffmpeg::packet::Packet> {
-        self.packet_receiver.try_recv().ok()
     }
 }
 
 pub struct Demuxer {
-    ictx: ffmpeg::format::context::Input,
+    _context: Arc<ffmpeg::context::InputFormat>,
+    streams: Vec<Arc<Mutex<DemuxerStreamInner>>>,
 }
 
 impl Demuxer {
-    pub fn new(path: &Path) -> Self {
-        let mut ictx = ffmpeg::format::input(path).unwrap();
-        Demuxer { ictx }
+    pub fn new(source: MediaSource) -> Self {
+        let context = Arc::new(source.into_context());
+        let nb_streams = unsafe { (*context.as_ptr()).nb_streams as usize };
+        let streams = (0..nb_streams)
+            .map(|i| Arc::new(Mutex::new(DemuxerStreamInner::new(context.clone(), i))))
+            .collect();
+        Demuxer {
+            _context: context,
+            streams,
+        }
     }
 
-    pub fn format(&self) -> String {
-        self.ictx.format().name().to_string()
+    pub fn stream(&self, index: usize) -> Option<DemuxerStream> {
+        self.streams
+            .get(index)
+            .map(|s| DemuxerStream::new(s.clone()))
+    }
+}
+
+struct DemuxerStreamInner {
+    context: ffmpeg::context::InputStream,
+}
+
+impl DemuxerStreamInner {
+    fn new(context: Arc<ffmpeg::context::InputFormat>, index: usize) -> Self {
+        DemuxerStreamInner {
+            context: ffmpeg::context::InputStream::wrap(context, index),
+        }
     }
 
-    pub fn all_streams(&self) -> Vec<Arc<DemuxerStream>> {
-        vec![]
+    fn index(&self) -> usize {
+        self.context.index()
     }
 
-    pub fn get_stream(&self, index: usize) -> Option<Arc<DemuxerStream>> {
-        None
-    }
-
-    pub fn get_best_stream(&self, media_type: MediaType) -> Option<Arc<DemuxerStream>> {
-        None
-    }
-
-    pub fn start(&self) {
-        unimplemented!()
+    fn media_type(&self) -> MediaType {
+        unsafe { ffmpeg::media_type_of_stream(self.context.as_ptr()) }
     }
 }
