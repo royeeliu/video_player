@@ -1,5 +1,5 @@
 [package]
-name = "video_player"
+name = "vtk"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,7 @@ log = "0.4"
 env_logger = "0.11"
 winit = "0.30"
 softbuffer = "0.4"
-ffmpeg-next = "7.0.4"
+ffmpeg-next = "7.1.0"
 wgpu = "22.1"
 pollster = "0.3"
 bytemuck = { version = "1.19", features = ["derive"] }

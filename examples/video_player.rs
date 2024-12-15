@@ -2,7 +2,7 @@ use std::{
     env,
     sync::{mpsc, Arc},
 };
-use video_renderer::VideoRenderer;
+use vtk::video_renderer::VideoRenderer;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -12,12 +12,6 @@ use winit::{
 
 extern crate ffmpeg_next as ffmpeg;
 type VideoReceiver = mpsc::Receiver<ffmpeg::frame::Video>;
-
-mod convert_from_yuv;
-mod presenter;
-mod texture;
-mod video_renderer;
-mod wgpu_context;
 
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
